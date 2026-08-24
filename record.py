@@ -196,10 +196,10 @@ def draw_overlay(frame, steer, gas, recording, saved, axes_line, pad_name):
         f"{pad_name}: {axes_line}",
     ]
     color = (0, 0, 255) if recording else (0, 255, 0)
-    y = 24
+    y = 18
     for line in lines:
-        cv2.putText(view, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
-        y += 24
+        cv2.putText(view, line, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+        y += 15
     return view
 
 

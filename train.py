@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
+TEST_SPLIT = 0.1
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Training a driving model on the dataset from record.py")
@@ -102,6 +104,29 @@ def evaluate(model, loader, criterion, device):
     return total / max(count, 1)
 
 
+def test_report(model, loader, device):
+    model.eval()
+    steer_errs = []
+    throttle_errs = []
+    with torch.no_grad():
+        for imgs, targets in loader:
+            preds = model(imgs.to(device)).cpu().numpy()
+            targets = targets.numpy()
+            steer_errs.append(np.abs(preds[:, 0] - targets[:, 0]))
+            throttle_errs.append(np.abs(preds[:, 1] - targets[:, 1]))
+    steer_err = np.concatenate(steer_errs)
+    throttle_err = np.concatenate(throttle_errs)
+
+    mse = (steer_err ** 2).mean() * 0.5 + (throttle_err ** 2).mean() * 0.5
+    print("=== TEST SET REPORT ===")
+    print(f"Test samples: {len(steer_err)}")
+    print(f"Overall MSE: {mse:.6f}")
+    print(f"Steering : MAE {steer_err.mean():.4f} | within +-0.03: {(steer_err <= 0.03).mean() * 100:.1f}% | "
+          f"within +-0.07: {(steer_err <= 0.07).mean() * 100:.1f}% | within +-0.15: {(steer_err <= 0.15).mean() * 100:.1f}%")
+    print(f"Throttle : MAE {throttle_err.mean():.4f} | within +-0.05: {(throttle_err <= 0.05).mean() * 100:.1f}% | "
+          f"within +-0.10: {(throttle_err <= 0.10).mean() * 100:.1f}% | within +-0.25: {(throttle_err <= 0.25).mean() * 100:.1f}%")
+
+
 def main():
     args = parse_args()
     random.seed(args.seed)
@@ -112,21 +137,39 @@ def main():
     data_root = Path(args.data) if args.data else base / "dataset"
 
     dataset = DriveDataset(data_root, args.width, args.height)
-    print(f"Samples: {len(dataset)}")
 
-    indices = list(range(len(dataset)))
+    groups = {}
+    for i, (path, _s, _t) in enumerate(dataset.samples):
+        key = Path(path).stem.split("_")[0]
+        groups.setdefault(key, []).append(i)
+    keys = sorted(groups.keys())
     rng = random.Random(args.seed)
-    rng.shuffle(indices)
-    val_count = max(1, int(len(indices) * args.val_split))
-    val_idx = indices[:val_count]
-    train_idx = indices[val_count:]
+    rng.shuffle(keys)
+
+    test_count = max(1, int(len(keys) * TEST_SPLIT))
+    val_count = max(1, int(len(keys) * args.val_split))
+    test_keys = keys[:test_count]
+    val_keys = keys[test_count:test_count + val_count]
+    train_keys = keys[test_count + val_count:]
+
+    def indices_of(key_list):
+        return [i for k in key_list for i in groups[k]]
+
+    train_idx = indices_of(train_keys)
+    val_idx = indices_of(val_keys)
+    test_idx = indices_of(test_keys)
+    print(f"Samples: {len(dataset)} total | train: {len(train_idx)} | val: {len(val_idx)} | test: {len(test_idx)} "
+          f"(splits are grouped per source frame, so augmented copies never leak between splits)")
 
     train_set = torch.utils.data.Subset(dataset, train_idx)
     val_set = torch.utils.data.Subset(dataset, val_idx)
+    test_set = torch.utils.data.Subset(dataset, test_idx)
     train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True,
                               num_workers=args.workers, pin_memory=True)
     val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False,
                             num_workers=args.workers, pin_memory=True)
+    test_loader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False,
+                             num_workers=args.workers, pin_memory=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -164,6 +207,9 @@ def main():
 
     if best_state is not None:
         model.load_state_dict(best_state)
+
+    test_report(model, test_loader, device)
+
     onnx_path = base / "model.onnx"
     dummy = torch.zeros(1, 3, args.height, args.width)
     torch.onnx.export(
