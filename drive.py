@@ -16,7 +16,7 @@ try:
 except ImportError:
     serial = None
 
-from record import detect_arduino_port, detect_camera
+from record import Gamepad, detect_arduino_port, detect_camera
 
 
 def parse_args():
@@ -29,6 +29,11 @@ def parse_args():
     parser.add_argument("--height", type=int, default=120, help="Network input height")
     parser.add_argument("--send-fps", type=float, default=20.0, help="Command send rate")
     parser.add_argument("--throttle-limit", type=float, default=1.0, help="Maximum throttle (safety limit)")
+    parser.add_argument("--manual-throttle", action="store_true", help="Driver controls throttle via gamepad, AI steers only")
+    parser.add_argument("--pad", type=int, default=0, help="Gamepad index (used with --manual-throttle)")
+    parser.add_argument("--steer-axis", type=int, default=3, help="Steering axis (gamepad, used with --manual-throttle)")
+    parser.add_argument("--gas-axis", type=int, default=1, help="Gas axis: 0.00 = full gas, >= 0.50 = idle (used with --manual-throttle)")
+    parser.add_argument("--deadzone", type=float, default=0.05)
     return parser.parse_args()
 
 
@@ -43,11 +48,11 @@ def clamp(value, low, high):
     return max(low, min(high, value))
 
 
-def draw_overlay(frame, steer, throttle, driving, sending, fps):
+def draw_overlay(frame, steer, throttle, driving, sending, fps, throttle_src):
     view = frame.copy()
     lines = [
-        f"Steer: {steer:+.3f}",
-        f"Throttle: {throttle:.3f}",
+        f"Steer: {steer:+.3f} [AI]",
+        f"Throttle: {throttle:.3f} [{throttle_src}]",
         f"Driving: {'YES' if driving else 'NO'}  [SPACE]",
         f"Inference: {fps:.1f} FPS   [Q] quit",
     ]
@@ -74,6 +79,15 @@ def main():
         sys.exit(1)
     session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
     input_name = session.get_inputs()[0].name
+
+    pad = None
+    if args.manual_throttle:
+        try:
+            pad = Gamepad(args.pad, args.steer_axis, args.gas_axis, args.deadzone)
+            print("MANUAL THROTTLE: gas comes from gamepad, AI steers only.")
+        except RuntimeError as e:
+            print(e)
+            sys.exit(1)
 
     port = args.port.strip()
     ser = None
@@ -127,7 +141,13 @@ def main():
             t0 = time.time()
             preds = session.run(None, {input_name: preprocess(frame, args.width, args.height)})[0][0]
             steer = clamp(float(preds[0]), -1.0, 1.0)
-            throttle = clamp(float(preds[1]), 0.0, args.throttle_limit)
+            throttle_src = "AI"
+            if pad is not None:
+                _pad_steer, pad_gas, _axes = pad.poll()
+                throttle = clamp(pad_gas, 0.0, args.throttle_limit)
+                throttle_src = "PAD"
+            else:
+                throttle = clamp(float(preds[1]), 0.0, args.throttle_limit)
             dt = time.time() - t0
             infer_fps = 0.9 * infer_fps + 0.1 * (1.0 / dt) if infer_fps else 1.0 / dt
 
@@ -145,7 +165,7 @@ def main():
                     ser = None
                     driving = False
 
-            cv2.imshow("Drive", draw_overlay(frame, steer, throttle, driving, sent or driving, infer_fps))
+            cv2.imshow("Drive", draw_overlay(frame, steer, throttle, driving, sent or driving, infer_fps, throttle_src))
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
@@ -164,6 +184,8 @@ def main():
                 pass
             ser.close()
         cap.release()
+        if pad is not None:
+            pad.quit()
         cv2.destroyAllWindows()
         print("Finished.")
 
