@@ -14,7 +14,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Manual driving: gamepad -> Arduino (format: *steering*, *throttle*), no dataset recording")
     parser.add_argument("--pad", type=int, default=0, help="Gamepad index")
     parser.add_argument("--steer-axis", type=int, default=3, help="Steering axis")
-    parser.add_argument("--gas-axis", type=int, default=1, help="Gas axis (0.00 = full gas, 0.50 = idle, >= 0.50 stays idle)")
+    parser.add_argument("--gas-axis", type=int, default=1, help="Gas axis (left joystick Y)")
     parser.add_argument("--deadzone", type=float, default=0.05)
     parser.add_argument("-p", "--port", default="", help="Arduino port (auto-detect when empty, 'none' disables sending)")
     parser.add_argument("--baud", type=int, default=115200)
@@ -111,3 +111,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
