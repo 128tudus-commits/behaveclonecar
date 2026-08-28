@@ -1,10 +1,11 @@
 #include <Arduino.h>
+#include <Servo.h>
+#include <stdlib.h>
 
-const uint8_t STEERING_SERVO_PIN = 3;
-const uint8_t THROTTLE_PWM_PIN = 9;
+const uint8_t STEERING_SERVO_PIN = 9;
+const uint8_t THROTTLE_PWM_PIN = 5;
 
 const uint16_t SERVO_MIN_US = 1000;
-const uint16_t SERVO_CENTER_US = 1500;
 const uint16_t SERVO_MAX_US = 2000;
 const int16_t SERVO_TRIM_US = 0;
 
@@ -13,46 +14,8 @@ const uint8_t THROTTLE_RESOLUTION = 255;
 const unsigned long FAILSAFE_TIMEOUT_MS = 500;
 const bool FAILSAFE_ENABLED = true;
 
-const uint16_t TICKS_PER_US = 2;
-const uint16_t PULSE_LOW_TICKS = 38000;
-
-volatile uint16_t g_pulseTicks = SERVO_CENTER_US * TICKS_PER_US;
-volatile bool g_pulseHigh = false;
-
-void setSteerPinHigh()
-{
-    PORTD |= _BV(PORTD0);
-}
-
-void setSteerPinLow()
-{
-    PORTD &= ~_BV(PORTD0);
-}
-
-ISR(TIMER3_COMPA_vect)
-{
-    if (g_pulseHigh) {
-        setSteerPinLow();
-        g_pulseHigh = false;
-        OCR3A = PULSE_LOW_TICKS;
-    } else {
-        setSteerPinHigh();
-        g_pulseHigh = true;
-        OCR3A = g_pulseTicks;
-    }
-}
-
-void setupSteeringTimer()
-{
-    pinMode(STEERING_SERVO_PIN, OUTPUT);
-    digitalWrite(STEERING_SERVO_PIN, LOW);
-
-    TCCR3A = 0;
-    TCCR3B = _BV(WGM32) | _BV(CS31);
-    TCNT3 = 0;
-    OCR3A = PULSE_LOW_TICKS;
-    TIMSK3 = _BV(OCIE3A);
-}
+Servo steeringServo;
+char rxBuffer[64];
 
 void applySteering(float steering)
 {
@@ -61,9 +24,8 @@ void applySteering(float steering)
     uint16_t pulseUs = SERVO_MIN_US
                      + (uint16_t)(fraction * (SERVO_MAX_US - SERVO_MIN_US))
                      + SERVO_TRIM_US;
-    noInterrupts();
-    g_pulseTicks = pulseUs * TICKS_PER_US;
-    interrupts();
+    
+    steeringServo.writeMicroseconds(pulseUs);
 }
 
 void applyThrottle(float throttle)
@@ -72,39 +34,37 @@ void applyThrottle(float throttle)
     analogWrite(THROTTLE_PWM_PIN, (uint8_t)(throttle * THROTTLE_RESOLUTION + 0.5f));
 }
 
+bool parseControls(const char* line, float& outSteering, float& outThrottle)
+{
+    
+    const char* ptr = strchr(line, '*');
+    if (!ptr) return false;
+    ptr++; 
 void applyNeutral()
 {
     applySteering(0.0f);
     applyThrottle(0.0f);
 }
 
-bool parseControls(const String& line, float& outSteering, float& outThrottle)
-{
-    int open1 = line.indexOf('*');
-    if (open1 < 0) return false;
-
-    int close1 = line.indexOf('*', open1 + 1);
-    if (close1 < 0) return false;
-
-    int separator = line.indexOf(',', close1 + 1);
-    if (separator < 0) return false;
-
-    int open2 = line.indexOf('*', separator + 1);
-    if (open2 < 0) return false;
-
-    int close2 = line.indexOf('*', open2 + 1);
-    if (close2 < 0) return false;
-
-    String steeringToken = line.substring(open1 + 1, close1);
-    String throttleToken = line.substring(separator + 1, open2);
-
-    steeringToken.trim();
-    throttleToken.trim();
-
-    if (steeringToken.length() == 0 || throttleToken.length() == 0) return false;
-
-    outSteering = steeringToken.toFloat();
-    outThrottle = throttleToken.toFloat();
+    
+    char* nextPtr;
+    float parsedSteering = strtod(ptr, &nextPtr);
+    if (ptr == nextPtr) return false; // Nie udało się odczytać liczby
+    
+    
+    ptr = strchr(nextPtr, ',');
+    if (!ptr) return false;
+    
+  
+    ptr = strchr(ptr, '*');
+    if (!ptr) return false;
+    ptr++;
+    
+    float parsedThrottle = strtod(ptr, &nextPtr);
+    if (ptr == nextPtr) return false; // Nie udało się odczytać liczby
+    
+    outSteering = parsedSteering;
+    outThrottle = parsedThrottle;
     return true;
 }
 
@@ -112,7 +72,7 @@ void setup()
 {
     Serial.begin(115200);
 
-    setupSteeringTimer();
+    steeringServo.attach(STEERING_SERVO_PIN, SERVO_MIN_US, SERVO_MAX_US);
 
     pinMode(THROTTLE_PWM_PIN, OUTPUT);
     applyNeutral();
@@ -120,7 +80,7 @@ void setup()
 
 void loop()
 {
-    static String rxBuffer = "";
+    static uint8_t rxIndex = 0;
     static unsigned long lastCommandMs = 0;
     static bool failsafeActive = true;
 
@@ -128,6 +88,8 @@ void loop()
         char c = (char)Serial.read();
 
         if (c == '\n') {
+            rxBuffer[rxIndex] = '\0';
+            
             float steering = 0.0f;
             float throttle = 0.0f;
 
@@ -138,12 +100,12 @@ void loop()
                 failsafeActive = false;
             }
 
-            rxBuffer = "";
+            rxIndex = 0;
         } else if (c != '\r') {
-            if (rxBuffer.length() < 63) {
-                rxBuffer += c;
+            if (rxIndex < 63) {
+                rxBuffer[rxIndex++] = c;
             } else {
-                rxBuffer = "";
+                rxIndex = 0;
             }
         }
     }
